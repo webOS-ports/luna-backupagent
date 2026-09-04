@@ -74,18 +74,20 @@ LSMethod BackupAgent::s_backupServerMethods[] = {
 static const char* const s_candidateFiles[] = {
     "/var/luna/preferences/universalsearchprefs.db",  // Just Type preferences
     "/var/luna/preferences/localeInfo",               // locale, region, keyboard
-    "/var/preferences/com.palm.display",
-    "/var/preferences/com.palm.sleep",
-    "/var/preferences/com.palm.telephony",
-    "/var/preferences/com.webos.service.battery",
-    "/var/preferences/com.webos.service.location",
-    "/var/preferences/com.webos.service.wifi",
+    // luna-prefs keeps each service's data in a per-service sqlite file
+    // (lunaprefs.c: "/var/preferences/%s/prefsDB.sl"). The backup protocol
+    // wants files, not the directories around them.
+    "/var/preferences/com.palm.display/prefsDB.sl",
+    "/var/preferences/com.palm.sleep/prefsDB.sl",
+    "/var/preferences/com.palm.telephony/prefsDB.sl",
+    "/var/preferences/com.webos.service.battery/prefsDB.sl",
+    "/var/preferences/com.webos.service.location/prefsDB.sl",
+    "/var/preferences/com.webos.service.wifi/prefsDB.sl",
     NULL
 };
 
 BackupAgent::BackupAgent()
-    : m_mainLoop(NULL)
-    , m_service(NULL)
+    : m_service(NULL)
 {
 }
 
@@ -111,10 +113,15 @@ BackupAgent* BackupAgent::instance()
     return s_instance;
 }
 
+void BackupAgent::destroy()
+{
+    delete s_instance;
+    s_instance = NULL;
+}
+
 bool BackupAgent::init(GMainLoop* mainLoop)
 {
-    g_assert(m_mainLoop == NULL);    // Only initialize once.
-    m_mainLoop = mainLoop;
+    g_assert(m_service == NULL);    // Only initialize once.
 
     LSError error;
     LSErrorInit(&error);
@@ -131,7 +138,7 @@ bool BackupAgent::init(GMainLoop* mainLoop)
         return false;
     }
 
-    if (!LSGmainAttach(m_service, m_mainLoop, &error)) {
+    if (!LSGmainAttach(m_service, mainLoop, &error)) {
         g_warning("Failed attaching to service bus: %s", error.message);
         LSErrorFree(&error);
         return false;
@@ -140,33 +147,61 @@ bool BackupAgent::init(GMainLoop* mainLoop)
     return true;
 }
 
-void BackupAgent::initFilesForBackup()
+std::list<std::string> BackupAgent::filesForBackup()
 {
-    m_backupFiles.clear();
+    std::list<std::string> files;
 
-    GFileTest fileTest = static_cast<GFileTest>(G_FILE_TEST_EXISTS | G_FILE_TEST_IS_REGULAR);
-
+    // IS_REGULAR alone: g_file_test ORs its bitfield, so combining it with
+    // EXISTS would accept anything that exists - IS_REGULAR already implies
+    // existence and is the actual filter.
     for (int i = 0; s_candidateFiles[i] != NULL; ++i) {
-        if (g_file_test(s_candidateFiles[i], fileTest)) {
-            m_backupFiles.push_back(s_candidateFiles[i]);
+        if (g_file_test(s_candidateFiles[i], G_FILE_TEST_IS_REGULAR)) {
+            files.push_back(s_candidateFiles[i]);
             g_debug("%s: backing up %s", __FUNCTION__, s_candidateFiles[i]);
         }
     }
 
-    g_message("%s: %zu file(s) to back up", __FUNCTION__, m_backupFiles.size());
+    g_message("%s: %zu file(s) to back up", __FUNCTION__, files.size());
+    return files;
 }
 
 /**
  * The payload carries incrementalKey, maxTempBytes and tempDir. We stage
  * nothing and return absolute paths that already exist, so none of them apply.
  */
+// The backup service must always get an answer, even on allocation failure -
+// an unanswered call stalls its whole run until timeout.
+static void replyOrFallback(LSHandle* lshandle, LSMessage* message, json_object* response)
+{
+    static const char* fallback = "{\"returnValue\":false,\"errorText\":\"out of memory\"}";
+
+    LSError lserror;
+    LSErrorInit(&lserror);
+
+    const char* payload = response ? json_object_to_json_string(response) : fallback;
+    if (!payload)
+        payload = fallback;
+
+    if (!LSMessageReply(lshandle, message, payload, &lserror)) {
+        g_warning("Can't send reply: %s", lserror.message);
+        LSErrorFree(&lserror);
+    }
+
+    if (response)
+        json_object_put(response);
+}
+
 bool BackupAgent::preBackupCallback(LSHandle* lshandle, LSMessage* message, void* user_data)
 {
-    BackupAgent* pThis = BackupAgent::instance();
-
     struct json_object* response = json_object_new_object();
-    if (!response) {
-        g_warning("Unable to allocate json object");
+    struct json_object* files = json_object_new_array();
+    if (!response || !files) {
+        g_warning("Unable to allocate json objects");
+        if (files)
+            json_object_put(files);
+        replyOrFallback(lshandle, message, NULL);
+        if (response)
+            json_object_put(response);
         return true;
     }
 
@@ -176,25 +211,19 @@ bool BackupAgent::preBackupCallback(LSHandle* lshandle, LSMessage* message, void
 
     // Built per request, not once at startup: a preference file the user has
     // never touched does not exist yet, and may by the next backup.
-    pThis->initFilesForBackup();
+    std::list<std::string> backupFiles = filesForBackup();
 
-    struct json_object* files = json_object_new_array();
     std::list<std::string>::const_iterator i;
-    for (i = pThis->m_backupFiles.begin(); i != pThis->m_backupFiles.end(); ++i)
-        json_object_array_add(files, json_object_new_string(i->c_str()));
+    for (i = backupFiles.begin(); i != backupFiles.end(); ++i) {
+        json_object* entry = json_object_new_string(i->c_str());
+        if (entry)
+            json_object_array_add(files, entry);
+    }
 
     json_object_object_add(response, "files", files);
 
-    LSError lserror;
-    LSErrorInit(&lserror);
-
     g_message("Sending response to preBackupCallback: %s", json_object_to_json_string(response));
-    if (!LSMessageReply(lshandle, message, json_object_to_json_string(response), &lserror)) {
-        g_warning("Can't send reply to preBackupCallback error: %s", lserror.message);
-        LSErrorFree(&lserror);
-    }
-
-    json_object_put(response);
+    replyOrFallback(lshandle, message, response);
     return true;
 }
 
@@ -220,25 +249,17 @@ bool BackupAgent::postRestoreCallback(LSHandle* lshandle, LSMessage* message, vo
         json_object_put(root);
     }
 
-    LSError lserror;
-    LSErrorInit(&lserror);
-
     struct json_object* response = json_object_new_object();
-    if (!response) {
+    if (response) {
+        json_object_object_add(response, "returnValue", json_object_new_boolean(valid));
+        if (!valid)
+            json_object_object_add(response, "errorText",
+                json_object_new_string("expected {\"files\": array}"));
+    }
+    else {
         g_warning("Unable to allocate json object");
-        return true;
     }
 
-    json_object_object_add(response, "returnValue", json_object_new_boolean(valid));
-    if (!valid)
-        json_object_object_add(response, "errorText",
-            json_object_new_string("expected {\"files\": array}"));
-
-    if (!LSMessageReply(lshandle, message, json_object_to_json_string(response), &lserror)) {
-        g_warning("Can't send reply to postRestoreCallback error: %s", lserror.message);
-        LSErrorFree(&lserror);
-    }
-
-    json_object_put(response);
+    replyOrFallback(lshandle, message, response);
     return true;
 }

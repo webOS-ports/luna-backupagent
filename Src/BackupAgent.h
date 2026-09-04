@@ -43,6 +43,7 @@ class BackupAgent
 {
 public:
     static BackupAgent* instance();
+    static void destroy();
 
     bool init(GMainLoop* mainLoop);
 
@@ -50,7 +51,7 @@ private:
     BackupAgent();
     ~BackupAgent();
 
-    void initFilesForBackup();
+    static std::list<std::string> filesForBackup();
 
     static bool preBackupCallback(LSHandle* lshandle, LSMessage* message, void* user_data);
     static bool postRestoreCallback(LSHandle* lshandle, LSMessage* message, void* user_data);
@@ -58,10 +59,7 @@ private:
     static LSMethod s_backupServerMethods[];
     static BackupAgent* s_instance;
 
-    GMainLoop* m_mainLoop;
     LSHandle* m_service;
-
-    std::list<std::string> m_backupFiles;
 };
 
 #endif // BACKUP_AGENT_H
