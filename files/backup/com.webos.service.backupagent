@@ -1,0 +1,5 @@
+{
+    "id" : "com.webos.service.backupagent",
+    "preBackup" : "preBackup",
+    "postRestore" : "postRestore"
+}

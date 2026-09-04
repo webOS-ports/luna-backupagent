@@ -1,0 +1,6 @@
+{
+    "backupagent.operation": [
+        "com.webos.service.backupagent/preBackup",
+        "com.webos.service.backupagent/postRestore"
+    ]
+}

@@ -1,0 +1,14 @@
+{
+    "com.webos.service.backupagent": [
+        "backupagent.operation"
+    ],
+    "com.palm.service.backup*": [
+        "backupagent.operation"
+    ],
+    "com.palm.app.backup*": [
+        "backupagent.operation"
+    ],
+    "com.webos.service.backup*": [
+        "backupagent.operation"
+    ]
+}

@@ -1,0 +1,12 @@
+[Unit]
+Description=LuneOS system preferences backup agent
+Requires=ls-hubd.service
+After=ls-hubd.service
+
+[Service]
+Type=simple
+Restart=on-failure
+ExecStart=/usr/sbin/LunaBackupAgent
+
+[Install]
+WantedBy=multi-user.target

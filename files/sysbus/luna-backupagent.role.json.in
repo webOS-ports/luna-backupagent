@@ -1,0 +1,13 @@
+{
+    "exeName":"@WEBOS_INSTALL_SBINDIR@/LunaBackupAgent",
+    "trustLevel": "oem",
+    "type": "privileged",
+    "allowedNames": ["com.webos.service.backupagent"],
+    "permissions": [
+        {
+            "service":"com.webos.service.backupagent",
+            "inbound":["*"],
+            "outbound":["*"]
+        }
+    ]
+}
