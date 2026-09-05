@@ -1,8 +1,9 @@
 luna-backupagent
 ================
 
-The system-preferences end of the LuneOS backup protocol, serving
-`com.webos.service.backupagent`.
+Summary
+-------
+The system-preferences end of the LuneOS backup protocol, serving com.webos.service.backupagent
 
 A backup service walks `/etc/palm/backup`, calls `preBackup` on every service
 registered there, copies away the files each returns, and calls `postRestore`
