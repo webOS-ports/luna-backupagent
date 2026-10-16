@@ -16,7 +16,7 @@
 #
 # LICENSE@@@
 
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 
 project(luna-backupagent CXX)
 
@@ -43,8 +43,14 @@ webos_add_linker_options(ALL --no-undefined)
 
 include_directories(Src)
 
-add_executable(LunaBackupAgent
+# Everything but main(), so tests/ can build the same code against a
+# stand-in for the bus.
+add_library(backupagent-core OBJECT
     Src/BackupAgent.cpp
+    Src/Daemon.cpp)
+
+add_executable(LunaBackupAgent
+    $<TARGET_OBJECTS:backupagent-core>
     Src/Main.cpp)
 
 target_link_libraries(LunaBackupAgent
@@ -54,6 +60,11 @@ target_link_libraries(LunaBackupAgent
     pthread)
 
 webos_build_daemon(NAME LunaBackupAgent)
+
+option(BUILD_TESTING "Build the unit tests in tests/" OFF)
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 webos_build_system_bus_files()
 
 # The backup service walks /etc/palm/backup and calls preBackup on every

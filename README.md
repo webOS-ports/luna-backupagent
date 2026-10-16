@@ -39,6 +39,9 @@ Build
 
 Standard webOS CMake component; depends on glib-2.0, luna-service2 and json-c.
 
+`-DBUILD_TESTING=ON` adds the unit tests (googletest); `tests/README.md`
+describes them and the sanitizer, static-analysis and warning gates.
+
 # Copyright and License Information
 
 Copyright (c) 2009-2013 LG Electronics, Inc.

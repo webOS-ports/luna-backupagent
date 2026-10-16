@@ -19,6 +19,8 @@
 
 #include "BackupAgent.h"
 
+#include <sys/stat.h>
+
 #include <json.h>
 #include <glib.h>
 #include <string>
@@ -54,14 +56,14 @@
  * restore an older copy over a newer one depending on file order.
  */
 
-static const char* kServiceName = "com.webos.service.backupagent";
+static const char* const kServiceName = "com.webos.service.backupagent";
 
 BackupAgent* BackupAgent::s_instance = NULL;
 
 LSMethod BackupAgent::s_backupServerMethods[] = {
-    { "preBackup",   BackupAgent::preBackupCallback },
-    { "postRestore", BackupAgent::postRestoreCallback },
-    { 0, 0 }
+    { "preBackup",   BackupAgent::preBackupCallback,   LUNA_METHOD_FLAGS_NONE },
+    { "postRestore", BackupAgent::postRestoreCallback, LUNA_METHOD_FLAGS_NONE },
+    { NULL, NULL, LUNA_METHOD_FLAGS_NONE }
 };
 
 /**
@@ -147,17 +149,28 @@ bool BackupAgent::init(GMainLoop* mainLoop)
     return true;
 }
 
-std::list<std::string> BackupAgent::filesForBackup()
+std::list<std::string> BackupAgent::filesForBackup(const char* const candidates[])
 {
     std::list<std::string> files;
 
-    // IS_REGULAR alone: g_file_test ORs its bitfield, so combining it with
-    // EXISTS would accept anything that exists - IS_REGULAR already implies
-    // existence and is the actual filter.
-    for (int i = 0; s_candidateFiles[i] != NULL; ++i) {
-        if (g_file_test(s_candidateFiles[i], G_FILE_TEST_IS_REGULAR)) {
-            files.push_back(s_candidateFiles[i]);
-            g_debug("%s: backing up %s", __FUNCTION__, s_candidateFiles[i]);
+    // lstat, not stat (or g_file_test, which follows links): restore writes
+    // each file back to the path reported here, as root, so a symlink in
+    // place of one of these files would redirect that write to wherever it
+    // points. None of them is ever a link on a sane system; skip one if it is.
+    // This does not close the window between this check and the copy - the
+    // backup service has to open what it reads and writes without following
+    // links for that - it only keeps us from vouching for a link.
+    for (int i = 0; candidates[i] != NULL; ++i) {
+        struct stat st;
+        if (lstat(candidates[i], &st) != 0)
+            continue;
+
+        if (S_ISREG(st.st_mode)) {
+            files.push_back(candidates[i]);
+            g_debug("%s: backing up %s", __FUNCTION__, candidates[i]);
+        }
+        else if (S_ISLNK(st.st_mode)) {
+            g_warning("%s: %s is a symbolic link, not backing it up", __FUNCTION__, candidates[i]);
         }
     }
 
@@ -165,15 +178,12 @@ std::list<std::string> BackupAgent::filesForBackup()
     return files;
 }
 
-/**
- * The payload carries incrementalKey, maxTempBytes and tempDir. We stage
- * nothing and return absolute paths that already exist, so none of them apply.
- */
 // The backup service must always get an answer, even on allocation failure -
-// an unanswered call stalls its whole run until timeout.
+// an unanswered call stalls its whole run until timeout. Takes ownership of
+// response; NULL sends the fallback.
 static void replyOrFallback(LSHandle* lshandle, LSMessage* message, json_object* response)
 {
-    static const char* fallback = "{\"returnValue\":false,\"errorText\":\"out of memory\"}";
+    static const char* const fallback = "{\"returnValue\":false,\"errorText\":\"out of memory\"}";
 
     LSError lserror;
     LSErrorInit(&lserror);
@@ -191,38 +201,76 @@ static void replyOrFallback(LSHandle* lshandle, LSMessage* message, json_object*
         json_object_put(response);
 }
 
-bool BackupAgent::preBackupCallback(LSHandle* lshandle, LSMessage* message, void* user_data)
+// json_object_object_add() with the failures folded in: a NULL value (its
+// allocation failed) or a failed insert. Takes ownership of value either way.
+static bool addMember(json_object* object, const char* key, json_object* value)
 {
-    struct json_object* response = json_object_new_object();
-    struct json_object* files = json_object_new_array();
-    if (!response || !files) {
-        g_warning("Unable to allocate json objects");
+    if (!value)
+        return false;
+
+    if (json_object_object_add(object, key, value) != 0) {
+        json_object_put(value);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * The payload carries incrementalKey, maxTempBytes and tempDir. We stage
+ * nothing and return absolute paths that already exist, so none of them apply.
+ *
+ * Returns NULL if any part could not be allocated: a reply missing a file, or
+ * with a null version, would be taken for a complete backup of less.
+ */
+json_object* BackupAgent::preBackupResponse(const std::list<std::string>& backupFiles)
+{
+    json_object* response = json_object_new_object();
+    if (!response)
+        return NULL;
+
+    // The array is filled first and handed over before anything else, so
+    // there is exactly one point where its ownership moves to response.
+    json_object* files = json_object_new_array();
+    bool ok = (files != NULL);
+    for (std::list<std::string>::const_iterator i = backupFiles.begin(); ok && i != backupFiles.end(); ++i) {
+        json_object* entry = json_object_new_string(i->c_str());
+        if (!entry || json_object_array_add(files, entry) != 0) {
+            if (entry)
+                json_object_put(entry);
+            ok = false;
+        }
+    }
+    if (!ok) {
         if (files)
             json_object_put(files);
-        replyOrFallback(lshandle, message, NULL);
-        if (response)
-            json_object_put(response);
-        return true;
+        json_object_put(response);
+        return NULL;
     }
 
-    json_object_object_add(response, "description",
-        json_object_new_string("Backup of system preferences: Just Type, locale and per-service settings"));
-    json_object_object_add(response, "version", json_object_new_string("1.0"));
+    ok = addMember(response, "files", files)
+      && addMember(response, "description",
+             json_object_new_string("Backup of system preferences: Just Type, locale and per-service settings"))
+      && addMember(response, "version", json_object_new_string("1.0"));
+    if (!ok) {
+        json_object_put(response);
+        return NULL;
+    }
+    return response;
+}
 
+bool BackupAgent::preBackupCallback(LSHandle* lshandle, LSMessage* message, void* /*user_data*/)
+{
     // Built per request, not once at startup: a preference file the user has
     // never touched does not exist yet, and may by the next backup.
-    std::list<std::string> backupFiles = filesForBackup();
-
-    std::list<std::string>::const_iterator i;
-    for (i = backupFiles.begin(); i != backupFiles.end(); ++i) {
-        json_object* entry = json_object_new_string(i->c_str());
-        if (entry)
-            json_object_array_add(files, entry);
+    json_object* response = preBackupResponse(filesForBackup(s_candidateFiles));
+    if (response) {
+        const char* text = json_object_to_json_string(response);
+        g_message("Sending response to preBackupCallback: %s", text ? text : "(unprintable)");
+    }
+    else {
+        g_warning("Unable to allocate the preBackup response");
     }
 
-    json_object_object_add(response, "files", files);
-
-    g_message("Sending response to preBackupCallback: %s", json_object_to_json_string(response));
     replyOrFallback(lshandle, message, response);
     return true;
 }
@@ -232,7 +280,7 @@ bool BackupAgent::preBackupCallback(LSHandle* lshandle, LSMessage* message, void
  * reported. Nothing here needs to move them, so this only acknowledges - but it
  * has to acknowledge, or restore stalls on us the same way backup used to.
  */
-bool BackupAgent::postRestoreCallback(LSHandle* lshandle, LSMessage* message, void* user_data)
+bool BackupAgent::postRestoreCallback(LSHandle* lshandle, LSMessage* message, void* /*user_data*/)
 {
     const char* str = LSMessageGetPayload(message);
     if (str)
@@ -242,23 +290,26 @@ bool BackupAgent::postRestoreCallback(LSHandle* lshandle, LSMessage* message, vo
     // but reject a payload that is not even that so a misdirected call is
     // visible to its sender.
     bool valid = false;
-    struct json_object* root = str ? json_tokener_parse(str) : NULL;
+    json_object* root = str ? json_tokener_parse(str) : NULL;
     if (root) {
-        struct json_object* files = json_object_object_get(root, "files");
-        valid = (files != NULL) && json_object_is_type(files, json_type_array);
+        json_object* files = NULL;
+        valid = json_object_object_get_ex(root, "files", &files)
+             && json_object_is_type(files, json_type_array);
         json_object_put(root);
     }
 
-    struct json_object* response = json_object_new_object();
+    json_object* response = json_object_new_object();
     if (response) {
-        json_object_object_add(response, "returnValue", json_object_new_boolean(valid));
-        if (!valid)
-            json_object_object_add(response, "errorText",
-                json_object_new_string("expected {\"files\": array}"));
+        bool ok = addMember(response, "returnValue", json_object_new_boolean(valid));
+        if (ok && !valid)
+            ok = addMember(response, "errorText", json_object_new_string("expected {\"files\": array}"));
+        if (!ok) {
+            json_object_put(response);
+            response = NULL;
+        }
     }
-    else {
-        g_warning("Unable to allocate json object");
-    }
+    if (!response)
+        g_warning("Unable to allocate the postRestore response");
 
     replyOrFallback(lshandle, message, response);
     return true;
