@@ -60,6 +60,11 @@ target_link_libraries(LunaBackupAgent
     pthread)
 
 webos_build_daemon(NAME LunaBackupAgent)
+
+option(BUILD_TESTING "Build the unit tests in tests/" OFF)
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 webos_build_system_bus_files()
 
 # The backup service walks /etc/palm/backup and calls preBackup on every

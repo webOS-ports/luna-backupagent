@@ -1,0 +1,8 @@
+# Static-analysis findings that were looked at and are not fixed, with why.
+# static-analysis.sh fails on anything not listed here; line numbers are
+# ignored when matching, so an entry survives code moving around it.
+# Format: <tool>: <file>:<line>: <message>   # <reason>
+
+# false positive, also reported on the code before the harness: gcc's analyzer does not model libstdc++'s std::list constructor and flags the NRVO return of a default-constructed list; ASan, valgrind --track-origins and clang's analyzer are clean on it
+gcc-fanalyzer-O0: Src/BackupAgent.cpp:178:12: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
+gcc-fanalyzer-O2: Src/BackupAgent.cpp:178:12: warning: use of uninitialized value '<unknown>' [CWE-457] [-Wanalyzer-use-of-uninitialized-value]
