@@ -26,6 +26,8 @@
 #include <glib.h>
 #include <luna-service2/lunaservice.h>
 
+struct json_object;
+
 /**
  * Serves com.webos.service.backupagent: the system-preferences end of the
  * platform backup protocol described by
@@ -47,11 +49,22 @@ public:
 
     bool init(GMainLoop* mainLoop);
 
+    /**
+     * The entries of a NULL-terminated candidate list that are regular files
+     * right now, in list order. Public for the unit tests, which hand it
+     * paths of their own; the daemon only ever passes its built-in list.
+     */
+    static std::list<std::string> filesForBackup(const char* const candidates[]);
+
+    /**
+     * The preBackup reply for these files, owned by the caller; NULL if any
+     * part of it could not be allocated. Public for the unit tests.
+     */
+    static json_object* preBackupResponse(const std::list<std::string>& backupFiles);
+
 private:
     BackupAgent();
     ~BackupAgent();
-
-    static std::list<std::string> filesForBackup();
 
     static bool preBackupCallback(LSHandle* lshandle, LSMessage* message, void* user_data);
     static bool postRestoreCallback(LSHandle* lshandle, LSMessage* message, void* user_data);

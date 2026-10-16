@@ -16,35 +16,9 @@
 *
 * LICENSE@@@ */
 
-#include <glib.h>
-#include <glib-unix.h>
+#include "Daemon.h"
 
-#include "BackupAgent.h"
-
-static gboolean onTermination(gpointer user_data)
+int main()
 {
-    g_main_loop_quit(static_cast<GMainLoop*>(user_data));
-    return G_SOURCE_REMOVE;
-}
-
-int main(int argc, char** argv)
-{
-    GMainLoop* mainLoop = g_main_loop_new(NULL, FALSE);
-
-    g_unix_signal_add(SIGTERM, onTermination, mainLoop);
-    g_unix_signal_add(SIGINT, onTermination, mainLoop);
-
-    if (!BackupAgent::instance()->init(mainLoop)) {
-        g_critical("Failed to start the backup agent; com.webos.service.backupagent will not answer");
-        g_main_loop_unref(mainLoop);
-        return 1;
-    }
-
-    g_main_loop_run(mainLoop);
-
-    // Run the destructor so the bus name is unregistered cleanly.
-    BackupAgent::destroy();
-
-    g_main_loop_unref(mainLoop);
-    return 0;
+    return runBackupAgent();
 }
